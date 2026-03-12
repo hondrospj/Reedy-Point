@@ -2270,7 +2270,10 @@ async function fetchObservedSeries({startISO=null,endISO=null} = {}){
     if(!res.ok) throw new Error("NOAA observations failed " + res.status);
 
     const j = await res.json();
-    if(j?.error?.message) throw new Error(j.error.message);
+ if (j?.error?.message) {
+  console.warn("NOAA observations unavailable:", j.error.message);
+  return [];
+}
 
     const arr = Array.isArray(j?.data) ? j.data : [];
     for(const v of arr){
@@ -3972,61 +3975,64 @@ async function updateLiveAndAnnualCounts(){
   buildAnnualArraysFromHistory_completedYears();
   renderAnnual();
 
-  // ---- Live observed series YTD (NAVD88) ----
   const { y: curYear } = getESTParts(new Date());
- const startISO = startOfYearEST_ISO(curYear);
-const endISO   = nowISO();
+  const startISO = startOfYearEST_ISO(curYear);
+  const endISO   = nowISO();
 
-const ytd = await fetchObservedSeries({ startISO, endISO });
-if(!ytd.length) throw new Error("no live water-level data returned from NOAA");
+  let ytd = [];
+  try{
+    ytd = await fetchObservedSeries({ startISO, endISO });
+  }catch(e){
+    console.error("Live YTD observations failed:", e);
+    ytd = [];
+  }
 
-  STATE.ytdNavd  = ytd;
-  STATE.lastNavd = ytd[ytd.length - 1];
+  STATE.ytdNavd = ytd;
+  STATE.lastNavd = ytd.length ? ytd[ytd.length - 1] : null;
 
-  // ---- Current water level card ----
-curFtEl.textContent = toDisplayFtFromNavd(STATE.lastNavd.ft).toFixed(2);
-curMetaEl.textContent = "Updated: " + fmtESTFull(STATE.lastNavd.t);
-lastPill.textContent  = "Last updated: " + fmtESTFull(STATE.lastNavd.t);
-setStage(STATE.lastNavd.ft);
-setCurrentNumberColorByNavd(STATE.lastNavd.ft);
-  // ---- Daily range (today) ----
-// ---- Daily range (today) ----
-const today = sliceAfter(ytd, startOfTodayLocalTZ_ISO());
-STATE.todayNavd = today;
+  if(STATE.lastNavd){
+    curFtEl.textContent = toDisplayFtFromNavd(STATE.lastNavd.ft).toFixed(2);
+    curMetaEl.textContent = "Updated: " + fmtESTFull(STATE.lastNavd.t);
+    lastPill.textContent  = "Last updated: " + fmtESTFull(STATE.lastNavd.t);
+    setStage(STATE.lastNavd.ft);
+    setCurrentNumberColorByNavd(STATE.lastNavd.ft);
+  }else{
+    curFtEl.textContent = "—";
+    curMetaEl.textContent = "Updated: —";
+    lastPill.textContent = "Last updated: —";
+    stageTextEl.textContent = "LIVE OBSERVATIONS UNAVAILABLE";
+    stageDotEl.style.background = "var(--muted)";
+    stageDotEl.style.boxShadow = "0 0 0 4px rgba(169,182,211,.18)";
+  }
+
+  const today = sliceAfter(ytd, startOfTodayLocalTZ_ISO());
+  STATE.todayNavd = today;
+
   if(dailyRangeDateEl){
-  dailyRangeDateEl.textContent = fmtNiceDate(startOfTodayLocalTZ_ISO());
-}
+    dailyRangeDateEl.textContent = fmtNiceDate(startOfTodayLocalTZ_ISO());
+  }
 
+  if(today.length){
+    const dmx = maxPoint(today), dmn = minPoint(today);
 
-if(today.length){
-  const dmx = maxPoint(today), dmn = minPoint(today);
+    dayMaxFtEl.textContent = toDisplayFtFromNavd(dmx.ft).toFixed(2);
+    dayMinFtEl.textContent = toDisplayFtFromNavd(dmn.ft).toFixed(2);
 
-  dayMaxFtEl.textContent = toDisplayFtFromNavd(dmx.ft).toFixed(2);
-  dayMinFtEl.textContent = toDisplayFtFromNavd(dmn.ft).toFixed(2);
+    if(dayMaxWhenEl) dayMaxWhenEl.textContent = fmtESTTime(dmx.t);
+    if(dayMinWhenEl) dayMinWhenEl.textContent = fmtESTTime(dmn.t);
+    if(dayRangeMeta) dayRangeMeta.textContent = "";
+  }else{
+    dayMaxFtEl.textContent = "—";
+    dayMinFtEl.textContent = "—";
+    if(dayMaxWhenEl) dayMaxWhenEl.textContent = "—";
+    if(dayMinWhenEl) dayMinWhenEl.textContent = "—";
+    if(dayRangeMeta) dayRangeMeta.textContent = "";
+  }
 
-  //   ONLY show the time under each number (EST)
-  if(dayMaxWhenEl) dayMaxWhenEl.textContent = fmtESTTime(dmx.t);
-  if(dayMinWhenEl) dayMinWhenEl.textContent = fmtESTTime(dmn.t);
-
-  //   optional: blank the long meta line so it doesn't “fight” the clean layout
-  if(dayRangeMeta) dayRangeMeta.textContent = "";
-}else{
-  dayMaxFtEl.textContent = "—";
-  dayMinFtEl.textContent = "—";
-  if(dayMaxWhenEl) dayMaxWhenEl.textContent = "—";
-  if(dayMinWhenEl) dayMinWhenEl.textContent = "—";
-  if(dayRangeMeta) dayRangeMeta.textContent = "";
-}
-
-
-
-  // ---- Current-year flooding bar: history-based (peaks list) ----
-  // NOTE: requires HIGH_TIDES_NAVD already loaded (JSON/TXT init)
   const counts = countEventsFromHistoryForYear(curYear);
   overwriteCurrentYearBarWithLiveCounts(counts);
   renderAnnual();
 }
-
 /* =========================
 Timeseries update (observed + predictions)
 - Observed: last 24h
@@ -4037,30 +4043,31 @@ async function updateTimeseries(){
   const start = new Date(end.getTime() - 24*3600*1000);
 
   // Observed: last 24h (NAVD88)
-  const obs = await fetchObservedSeries({
-    startISO: start.toISOString(),
-    endISO: end.toISOString()
-  });
-  STATE.obs24Navd = obs || [];
+  try {
+    const obs = await fetchObservedSeries({
+      startISO: start.toISOString(),
+      endISO: end.toISOString()
+    });
+    STATE.obs24Navd = obs || [];
+  } catch (e) {
+    console.error("Observed series failed:", e);
+    STATE.obs24Navd = [];
+  }
 
-// Forecast: PETSS (MLLW)
-try {
-  const { issuedTime, points } = await fetchPETSSForecast_MLLW({ hours: 72 });
-  STATE.pred72Mllw = points || [];
-
-  // 🔕 no message shown under chart
-  if (fcNote) fcNote.textContent = "";
-
-} catch (e) {
-  console.error("PETSS forecast failed:", e);
-  STATE.pred72Mllw = [];
-
-  // 🔕 still show nothing even if PETSS fails
-  if (fcNote) fcNote.textContent = "";
-}
-
-
-  //   IMPORTANT: actually render the chart + 24h range card after STATE updates
+  // Forecast: PETSS (MLLW)
+  try {
+    const { issuedTime, points } = await fetchPETSSForecast_MLLW({ hours: 72 });
+    STATE.pred72Mllw = points || [];
+    if (fcNote) fcNote.textContent = "";
+  } catch (e) {
+    console.error("PETSS forecast failed:", e);
+    STATE.pred72Mllw = [];
+    if (fcNote) fcNote.textContent = "";
+  }
+console.log("obs count:", STATE.obs24Navd?.length || 0);
+console.log("pred count:", STATE.pred72Mllw?.length || 0);
+console.log("first pred:", STATE.pred72Mllw?.[0] || null);
+  
   updateTsChartFromState();
   updatePred24RangeCard();
   updateFloodOutlook48();
